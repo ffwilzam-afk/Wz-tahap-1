@@ -1432,6 +1432,7 @@ async function hydrateAppState(){
     const state=(r?.data&&typeof r.data==='object'&&!Array.isArray(r.data))?r.data:{};
     const hasState=Object.keys(state).length>0;
     if(hasState)Object.assign(db,state);
+    appStateUpdatedAt=r.updatedAt||null;
     db.__onlineStateLoaded=true;
     return hasState;
   }catch(e){
@@ -1441,6 +1442,7 @@ async function hydrateAppState(){
 }
 
 let saveTimer=null;
+let appStateUpdatedAt=null;
 async function persistAppState(){
   if(!currentUser || !['owner','manager'].includes(currentUser.role))return false;
   const snapshot={};
@@ -1449,11 +1451,16 @@ async function persistAppState(){
     snapshot[key]=value;
   }
   try{
-    await api('app-state',{method:'PUT',body:JSON.stringify({data:snapshot})});
+    const saved=await api('app-state',{method:'PUT',body:JSON.stringify({data:snapshot,expectedUpdatedAt:appStateUpdatedAt})});
+    appStateUpdatedAt=saved?.updatedAt||appStateUpdatedAt;
     const el=document.getElementById('saveState');
     if(el)el.textContent='● Tersimpan online';
     return true;
   }catch(e){
+    if(e.message==='Data server sudah berubah. Muat ulang sebelum menyimpan.'){
+      await hydrateAppState();
+      if(typeof render==='function')render();
+    }
     console.warn('Online app-state save failed:',e.message||e);
     const el=document.getElementById('saveState');
     if(el)el.textContent='● Belum tersimpan ke server';

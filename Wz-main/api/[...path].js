@@ -134,7 +134,7 @@ async function authUser(req){
 }
 function cookie(name,value,maxAge){return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${process.env.NODE_ENV==='production'?'; Secure':''}`}
 function send(res,status,data,headers={}){res.statusCode=status;for(const [k,v] of Object.entries(headers))res.setHeader(k,v);res.setHeader('Content-Type','application/json; charset=utf-8');res.end(JSON.stringify(data));}
-async function body(req){let s='';for await(const c of req)s+=c;return s?JSON.parse(s):{};}
+async function body(req){let s='';for await(const c of req)s+=c;if(!s)return {};try{return JSON.parse(s)}catch{const error=new Error('Request body JSON tidak valid.');error.statusCode=400;throw error}}
 async function employeeFor(id){
   if(!id)return null;
   const r=await getPool().query('SELECT id,name,branch_id AS "branchId",active FROM wz_employees WHERE id=$1',[String(id)]);
@@ -148,7 +148,20 @@ function validTransaction(t){
 }
 function validShift(r){
   const values=['openingCash','cash','qris','cashExpense','physicalCash','totalPayment','expectedCash','cashDifference','serviceTotal','productTotal','totalOmzet'];
-  return validDate(r.date)&&values.every(key=>validMoney(r[key]))&&Number(r.serviceTotal||0)>0&&Number(r.totalPayment||0)>0&&Math.abs(Number(r.cashDifference||0))<=0.001&&Math.abs(Number(r.physicalCash||0)-(Number(r.openingCash||0)+Number(r.cash||0)-Number(r.cashExpense||0)))<=0.001;
+  const services=Array.isArray(r.services)?r.services:[],products=Array.isArray(r.products)?r.products:[];
+  const serviceTotal=Number(r.serviceTotal||0),productTotal=Number(r.productTotal||0),totalPayment=Number(r.totalPayment||0);
+  const expected=Number(r.openingCash||0)+Number(r.cash||0)-Number(r.cashExpense||0);
+  const serviceItems=services.filter(item=>Number(item?.qty||0)>0);
+  const calculatedServiceTotal=services.reduce((sum,item)=>sum+(Number(item?.qty||0)*Number(item?.price||0)),0);
+  const calculatedProductTotal=products.reduce((sum,item)=>sum+(Number(item?.qty||0)*Number(item?.price||0)),0);
+  const itemValues=[...services,...products].every(item=>validMoney(item?.qty)&&validMoney(item?.price));
+  return validDate(r.date)&&values.every(key=>validMoney(r[key]))&&itemValues&&serviceItems.length>0&&serviceTotal>0&&totalPayment>0&&
+    Math.abs(totalPayment-(Number(r.cash||0)+Number(r.qris||0)))<=0.001&&
+    Math.abs(serviceTotal-calculatedServiceTotal)<=0.001&&Math.abs(productTotal-calculatedProductTotal)<=0.001&&
+    Math.abs(Number(r.totalOmzet||0)-(serviceTotal+productTotal))<=0.001&&
+    Math.abs(Number(r.expectedCash||0)-expected)<=0.001&&
+    Math.abs(Number(r.cashDifference||0)-(Number(r.physicalCash||0)-expected))<=0.001&&
+    Math.abs(Number(r.cashDifference||0))<=0.001;
 }
 
 async function handler(req,res){
@@ -210,21 +223,21 @@ async function handler(req,res){
     }
     if(path==='app-state' && req.method==='PUT'){
       const u=await authUser(req);if(!u)return send(res,401,{ok:false,error:'Belum login.'});
-      const b=await body(req);const data=b?.data;
+      const b=await body(req);const data=b?.data;const expectedUpdatedAt=b?.expectedUpdatedAt||null;
       if(!data||typeof data!=='object'||Array.isArray(data))return send(res,400,{ok:false,error:'Data aplikasi tidak valid.'});
       if(u.role==='employee'){
         const customers=Array.isArray(data.customers)?data.customers:[];
         if(JSON.stringify(customers).length>4*1024*1024)return send(res,413,{ok:false,error:'Data pelanggan terlalu besar.'});
-        const current=await getPool().query('SELECT data FROM wz_app_state WHERE id=1');
-        const merged=current.rowCount&&current.rows[0].data&&typeof current.rows[0].data==='object'?{...current.rows[0].data,customers}: {customers};
-        await getPool().query(`INSERT INTO wz_app_state(id,data,updated_at) VALUES(1,$1::jsonb,NOW()) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,updated_at=NOW()`,[JSON.stringify(merged)]);
-        return send(res,200,{ok:true});
+        const saved=await getPool().query(`INSERT INTO wz_app_state(id,data,updated_at) VALUES(1,jsonb_build_object('customers',$1::jsonb),NOW()) ON CONFLICT(id) DO UPDATE SET data=wz_app_state.data||jsonb_build_object('customers',$1::jsonb),updated_at=NOW() WHERE $2::timestamptz IS NULL OR wz_app_state.updated_at=$2::timestamptz RETURNING updated_at AS "updatedAt"`,[JSON.stringify(customers),expectedUpdatedAt]);
+        if(!saved.rowCount&&expectedUpdatedAt)return send(res,409,{ok:false,error:'Data server sudah berubah. Muat ulang sebelum menyimpan.'});
+        return send(res,200,{ok:true,updatedAt:saved.rows[0]?.updatedAt||null});
       }
       if(!['owner','manager'].includes(u.role))return send(res,403,{ok:false,error:'Hanya Owner/Manager yang dapat menyimpan data online.'});
       const payload=JSON.stringify(data);
       if(payload.length>8*1024*1024)return send(res,413,{ok:false,error:'Data aplikasi terlalu besar.'});
-      await getPool().query(`INSERT INTO wz_app_state(id,data,updated_at) VALUES(1,$1::jsonb,NOW()) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,updated_at=NOW()`,[payload]);
-      return send(res,200,{ok:true});
+      const saved=await getPool().query(`INSERT INTO wz_app_state(id,data,updated_at) VALUES(1,$1::jsonb,NOW()) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,updated_at=NOW() WHERE $2::timestamptz IS NULL OR wz_app_state.updated_at=$2::timestamptz RETURNING updated_at AS "updatedAt"`,[payload,expectedUpdatedAt]);
+      if(!saved.rowCount&&expectedUpdatedAt)return send(res,409,{ok:false,error:'Data server sudah berubah. Muat ulang sebelum menyimpan.'});
+      return send(res,200,{ok:true,updatedAt:saved.rows[0]?.updatedAt||null});
     }
     if(path==='profile' && req.method==='GET'){
       const u=await authUser(req);if(!u)return send(res,401,{ok:false,error:'Belum login.'});
@@ -311,7 +324,7 @@ async function handler(req,res){
     if(path==='shift-report' && req.method==='POST'){
       const u=await authUser(req);if(!u)return send(res,401,{ok:false,error:'Belum login.'});const r=await body(req);if(!r.id||!r.date||!r.employeeId)return send(res,400,{ok:false,error:'Data shift tidak lengkap.'});
       if(Number(r.serviceTotal||0)<=0)return send(res,400,{ok:false,error:'Laporan shift wajib memiliki minimal 1 layanan.'});
-      if(Number(r.totalPayment||0)<=0)return send(res,400,{ok:false,error:'Total pembayaran laporan shift harus lebih dari Rp0.'});if(u.role==='employee'&&String(r.employeeId)!==String(u.employee_id))return send(res,403,{ok:false,error:'Karyawan hanya boleh menyimpan shift miliknya.'});const re=await employeeFor(r.employeeId);if(!re)return send(res,400,{ok:false,error:'Karyawan tidak terdaftar.'});if(re.active===false)return send(res,400,{ok:false,error:'Karyawan sudah nonaktif.'});const cash=Number(r.cash||0),qris=Number(r.qris||0),opening=Number(r.openingCash||0),expense=Number(r.cashExpense||0),physical=Number(r.physicalCash||0);if([cash,qris,opening,expense,physical].some(n=>!validMoney(n)))return send(res,400,{ok:false,error:'Nilai kas shift tidak valid.'});const expected=opening+cash-expense,difference=physical-expected;if(Math.abs(difference)>0.001)return send(res,400,{ok:false,error:'Selisih kasir harus Rp 0.'});
+      if(Number(r.totalPayment||0)<=0)return send(res,400,{ok:false,error:'Total pembayaran laporan shift harus lebih dari Rp0.'});if(!validShift(r))return send(res,400,{ok:false,error:'Nilai laporan shift tidak konsisten.'});if(u.role==='employee'&&String(r.employeeId)!==String(u.employee_id))return send(res,403,{ok:false,error:'Karyawan hanya boleh menyimpan shift miliknya.'});const re=await employeeFor(r.employeeId);if(!re)return send(res,400,{ok:false,error:'Karyawan tidak terdaftar.'});if(re.active===false)return send(res,400,{ok:false,error:'Karyawan sudah nonaktif.'});
       await getPool().query(`INSERT INTO wz_shift_reports(id,date,employee_id,employee_name,shift_type,customers,opening_cash,cash,qris,cash_expense,physical_cash,total_payment,expected_cash,cash_difference,service_total,product_total,total_omzet,services,products,note,saved_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19::jsonb,$20,$21) ON CONFLICT(id) DO UPDATE SET customers=EXCLUDED.customers,opening_cash=EXCLUDED.opening_cash,cash=EXCLUDED.cash,qris=EXCLUDED.qris,cash_expense=EXCLUDED.cash_expense,physical_cash=EXCLUDED.physical_cash,total_payment=EXCLUDED.total_payment,expected_cash=EXCLUDED.expected_cash,cash_difference=EXCLUDED.cash_difference,service_total=EXCLUDED.service_total,product_total=EXCLUDED.product_total,total_omzet=EXCLUDED.total_omzet,services=EXCLUDED.services,products=EXCLUDED.products,note=EXCLUDED.note,saved_at=EXCLUDED.saved_at,updated_at=NOW()`,[r.id,r.date,r.employeeId,r.employeeName||u.name,r.shiftType||null,Number(r.customers||0),Number(r.openingCash||0),Number(r.cash||0),Number(r.qris||0),Number(r.cashExpense||0),Number(r.physicalCash||0),Number(r.totalPayment||0),Number(r.expectedCash||0),Number(r.cashDifference||0),Number(r.serviceTotal||0),Number(r.productTotal||0),Number(r.totalOmzet||0),JSON.stringify(r.services||[]),JSON.stringify(r.products||[]),r.note||null,r.savedAt||new Date().toISOString()]);
       await sendShiftPushes(r,u.id).catch(()=>{});
       return send(res,200,{ok:true,id:r.id});
@@ -349,6 +362,6 @@ async function handler(req,res){
       const client=await getPool().connect();try{await client.query('BEGIN');await client.query('DELETE FROM wz_users WHERE employee_id=$1',[id]);const r=await client.query('DELETE FROM wz_employees WHERE id=$1 RETURNING id',[id]);if(!r.rowCount){await client.query('ROLLBACK');return send(res,404,{ok:false,error:'Karyawan tidak ditemukan.'});}await client.query('COMMIT');return send(res,200,{ok:true});}catch(e){await client.query('ROLLBACK');throw e}finally{client.release()};
     }
     return send(res,404,{ok:false,error:'Endpoint tidak ditemukan.'});
-  }catch(e){console.error(e);return send(res,500,{ok:false,error:safeServerError(e)});}
+  }catch(e){console.error(e);return send(res,e.statusCode||500,{ok:false,error:safeServerError(e)});}
 }
 module.exports=handler;
