@@ -1,5 +1,5 @@
 const CACHE = 'wz-manage-pro-pwa-v3';
-const APP_SHELL = ['/', '/index.html', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+const APP_SHELL = ['/', '/index.html', '/manifest.json', '/public/icon-192.png', '/public/icon-512.png', '/public/notification-icon-96.png', '/public/notification-icon-24.png'];
 const shownNotificationIds = new Set();
 
 self.addEventListener('install', event => {
@@ -23,8 +23,8 @@ self.addEventListener('push', event => {
   try { data = event.data ? event.data.json() : {}; } catch {}
   event.waitUntil(self.registration.showNotification(data.title || 'WZ MANAGE PRO', {
     body: data.body || 'Ada pembaruan baru.',
-    icon: data.icon || '/icons/icon-192.png',
-    badge: data.badge || data.icon || '/icons/icon-192.png',
+    icon: data.icon || '/public/notification-icon-96.png',
+    badge: data.badge || data.icon || '/public/notification-icon-24.png',
     timestamp: Number(data.timestamp) || Date.now(),
     tag: data.tag || 'wz-notification',
     renotify: false,
@@ -38,8 +38,8 @@ self.addEventListener('message', event => {
   shownNotificationIds.add(data.id);
   event.waitUntil(self.registration.showNotification(data.title || 'WZ MANAGE PRO', {
     body: data.message || '',
-    icon: data.icon || '/icons/icon-192.png',
-    badge: data.icon || '/icons/icon-192.png',
+    icon: data.icon || '/public/notification-icon-96.png',
+    badge: data.icon || '/public/notification-icon-24.png',
     timestamp: Number(data.timestamp) || Date.now(),
     tag: `wz-${data.id}`,
     renotify: false,
