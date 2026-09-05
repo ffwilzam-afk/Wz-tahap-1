@@ -230,6 +230,7 @@ window.saveEmployee=async function(id){
       if(existing)Object.assign(existing,result.employee); else db.employees.push(result.employee);
     }
     await syncEmployeesFromServer();
+    closeModal();
     toast(id?'Data karyawan & akun online diperbarui.':'Karyawan & akun login online dibuat.');
   }catch(e){alert('Gagal menyimpan ke server: '+e.message);}
   void legacySaveEmployee;
@@ -263,6 +264,7 @@ window.saveTransaction=async function(){
   try{
     await api('transaction',{method:'POST',body:JSON.stringify(payload)});
     await syncBusiness();
+    closeModal();
     toast('Transaksi berhasil tersimpan online.');
   }catch(e){toast('Transaksi gagal disimpan: '+e.message);}
   void legacySaveTransaction;
