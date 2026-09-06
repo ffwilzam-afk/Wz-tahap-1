@@ -102,6 +102,7 @@ function applyBusinessData(data){
       products:Array.isArray(r.products)?r.products:[]
     }));
   }
+  if(Array.isArray(data.notifications))db.notifications=data.notifications.map(item=>({...item,read:Boolean(item.readAt)}));
 }
 
 async function syncBusiness(){
@@ -127,7 +128,7 @@ async function syncBusiness(){
       if(local&&!sameFields(local,r,['date','employeeId','shiftType','customers','openingCash','cash','qris','cashExpense','physicalCash','totalPayment','expectedCash','cashDifference','serviceTotal','productTotal','totalOmzet','note']))
         conflicts.push({type:'shiftReport',id:String(r.id),resolution:'server'});
     }
-    applyBusinessData({transactions:serverTx,shiftReports:serverSh});
+    applyBusinessData({transactions:serverTx,shiftReports:serverSh,notifications:first?.notifications});
     if(conflicts.length&&typeof toast==='function')toast(`${conflicts.length} konflik data terdeteksi; versi server digunakan.`);
     if(typeof render==='function')render();
     return true;
@@ -141,6 +142,7 @@ window.WZOnlineBusiness={sync:syncBusiness,lastConflicts:[]};
 
 async function fullHydrate(){
   if(!currentUser)return false;
+  if(typeof Notification!=='undefined'&&Notification.permission==='granted')registerPushSubscription().catch(()=>{});
   if(['owner','manager'].includes(currentUser.role))await hydrateAppState();
   await syncEmployeesFromServer();
   return syncBusiness();

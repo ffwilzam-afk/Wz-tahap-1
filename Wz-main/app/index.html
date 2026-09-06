@@ -271,6 +271,13 @@ const defaultBranchId=db.branches[0]?.id||null;
 
 (db.employees||[]).forEach(e=>{if(!e.branchId)e.branchId=defaultBranchId;});
 function load(){return structuredClone(initial)}
+const ANDROID_NOTIFICATION_TITLE='WZ MANAGE PRO';
+const ANDROID_NOTIFICATION_ICON='/public/notification-icon-96.png';
+const androidNotificationKeys=new Map();
+function pushKeyBytes(value){const padding='='.repeat((4-value.length%4)%4),base64=(value+padding).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(base64),bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);return bytes}
+async function registerPushSubscription(){if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)||Notification.permission!=='granted')return false;try{const response=await fetch('/api/push/vapid-public-key',{credentials:'include'});if(!response.ok)return false;const data=await response.json(),registration=await navigator.serviceWorker.ready,subscription=await registration.pushManager.getSubscription()||await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:pushKeyBytes(data.publicKey)}),saved=await fetch('/api/push/subscribe',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(subscription)});return saved.ok}catch(error){console.debug('Registrasi Web Push tidak tersedia.',error);return false}}
+function requestNotificationPermission(){if(!('Notification' in window))return Promise.resolve('unsupported');if(Notification.permission==='granted'){registerPushSubscription();toast('Notifikasi Android sudah aktif.',true);return Promise.resolve('granted')}if(Notification.permission==='denied'){toast('Izin notifikasi ditolak di pengaturan browser.',true);return Promise.resolve('denied')}return Notification.requestPermission().then(permission=>{if(permission==='granted')registerPushSubscription();toast(permission==='granted'?'Notifikasi Android berhasil diaktifkan.':'Izin notifikasi belum diberikan.',true);return permission})}
+function notifyAndroid(message,notificationId){if(!('Notification' in window)||Notification.permission!=='granted')return;const key=String(notificationId||message),previous=androidNotificationKeys.get(key)||0;if(Date.now()-previous<5000)return;androidNotificationKeys.set(key,Date.now());navigator.serviceWorker?.ready.then(registration=>registration.active?.postMessage({type:'WZ_SHOW_NOTIFICATION',id:key,title:ANDROID_NOTIFICATION_TITLE,message:String(message),icon:ANDROID_NOTIFICATION_ICON,timestamp:Date.now(),url:'/'})).catch(()=>{})}
 function toast(message,silent=false){
  const el=document.getElementById('toast');
  if(!el)return;
@@ -278,6 +285,7 @@ function toast(message,silent=false){
  el.style.display='block';
  if(!silent)playNotificationSound();
  if(!silent)speakNotification(message);
+ if(!silent)notifyAndroid(message);
  clearTimeout(window.__wzToastTimer);
  window.__wzToastTimer=setTimeout(()=>{el.style.display='none'},2200);
 }
@@ -1534,6 +1542,7 @@ function applyBusinessData(data){
       products:Array.isArray(r.products)?r.products:[]
     }));
   }
+  if(Array.isArray(data.notifications))db.notifications=data.notifications.map(item=>({...item,read:Boolean(item.readAt)}));
 }
 
 async function syncBusiness(){
@@ -1559,7 +1568,7 @@ async function syncBusiness(){
       if(local&&!sameFields(local,r,['date','employeeId','shiftType','customers','openingCash','cash','qris','cashExpense','physicalCash','totalPayment','expectedCash','cashDifference','serviceTotal','productTotal','totalOmzet','note']))
         conflicts.push({type:'shiftReport',id:String(r.id),resolution:'server'});
     }
-    applyBusinessData({transactions:serverTx,shiftReports:serverSh});
+    applyBusinessData({transactions:serverTx,shiftReports:serverSh,notifications:first?.notifications});
     if(conflicts.length&&typeof toast==='function')toast(`${conflicts.length} konflik data terdeteksi; versi server digunakan.`);
     if(typeof render==='function')render();
     return true;
@@ -1573,6 +1582,7 @@ window.WZOnlineBusiness={sync:syncBusiness,lastConflicts:[]};
 
 async function fullHydrate(){
   if(!currentUser)return false;
+  if(typeof Notification!=='undefined'&&Notification.permission==='granted')registerPushSubscription().catch(()=>{});
   await hydrateAppState();
   if(['owner','manager'].includes(currentUser.role))await syncEmployeesFromServer();
   else{

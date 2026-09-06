@@ -44,6 +44,9 @@ async function sendShiftPushes(report,senderId){
     catch(error){if(error.statusCode===404||error.statusCode===410)await p.query('DELETE FROM wz_push_subscriptions WHERE id=$1',[subscription.id]);}
   }));
 }
+async function createShiftNotifications(client,report,senderId){
+  await client.query(`INSERT INTO wz_notifications(user_id,kind,reference_id,title,message,created_at) SELECT u.id,'SHIFT_REPORT',$1,$2,$3,NOW() FROM wz_users u WHERE u.active=true AND u.role IN ('owner','manager') AND u.id<>$4 ON CONFLICT(user_id,kind,reference_id) DO NOTHING`,[String(report.id),'Laporan shift tersimpan',`Laporan shift ${report.employeeName||report.employeeId||''} tanggal ${report.date} tersedia.`,senderId]);
+}
 
 let schemaPromise;
 async function schema(){
@@ -101,6 +104,13 @@ async function schema(){
       avatar TEXT NOT NULL DEFAULT '',
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS wz_notifications(
+      id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES wz_users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,reference_id TEXT NOT NULL,title TEXT NOT NULL,message TEXT NOT NULL,
+      read_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id,kind,reference_id)
+    );
+    CREATE INDEX IF NOT EXISTS wz_notifications_user_idx ON wz_notifications(user_id,created_at DESC);
   `);
   await p.query(`
     INSERT INTO wz_branches(id,name,active) VALUES
@@ -210,7 +220,15 @@ async function handler(req,res){
       const params=u.role==='employee'?[u.employee_id]:[];
       const tx=await p.query(txSql,params);
       const sh=await p.query(shSql,params);
-      return send(res,200,{ok:true,transactions:tx.rows,shiftReports:sh.rows});
+      const notes=await p.query('SELECT id,kind,reference_id AS "referenceId",title,message,read_at AS "readAt",created_at AS "createdAt" FROM wz_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100',[u.id]);
+      return send(res,200,{ok:true,transactions:tx.rows,shiftReports:sh.rows,notifications:notes.rows});
+    }
+    if(path==='notifications/read' && req.method==='POST'){
+      const u=await authUser(req);if(!u)return send(res,401,{ok:false,error:'Belum login.'});
+      const b=await body(req);
+      if(b.all){await getPool().query('UPDATE wz_notifications SET read_at=COALESCE(read_at,NOW()) WHERE user_id=$1',[u.id]);return send(res,200,{ok:true});}
+      if(!b.id)return send(res,400,{ok:false,error:'ID notifikasi wajib diisi.'});
+      await getPool().query('UPDATE wz_notifications SET read_at=COALESCE(read_at,NOW()) WHERE id=$1 AND user_id=$2',[b.id,u.id]);return send(res,200,{ok:true});
     }
     if(path==='app-state' && req.method==='GET'){
       const u=await authUser(req);if(!u)return send(res,401,{ok:false,error:'Belum login.'});
@@ -302,6 +320,7 @@ async function handler(req,res){
         }
         for(const r of shifts){
           await client.query(`INSERT INTO wz_shift_reports(id,date,employee_id,employee_name,shift_type,customers,opening_cash,cash,qris,cash_expense,physical_cash,total_payment,expected_cash,cash_difference,service_total,product_total,total_omzet,services,products,note,saved_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19::jsonb,$20,$21,NOW()) ON CONFLICT(id) DO UPDATE SET date=EXCLUDED.date,employee_id=EXCLUDED.employee_id,employee_name=EXCLUDED.employee_name,shift_type=EXCLUDED.shift_type,customers=EXCLUDED.customers,opening_cash=EXCLUDED.opening_cash,cash=EXCLUDED.cash,qris=EXCLUDED.qris,cash_expense=EXCLUDED.cash_expense,physical_cash=EXCLUDED.physical_cash,total_payment=EXCLUDED.total_payment,expected_cash=EXCLUDED.expected_cash,cash_difference=EXCLUDED.cash_difference,service_total=EXCLUDED.service_total,product_total=EXCLUDED.product_total,total_omzet=EXCLUDED.total_omzet,services=EXCLUDED.services,products=EXCLUDED.products,note=EXCLUDED.note,saved_at=EXCLUDED.saved_at,updated_at=NOW()`,[r.id,r.date,r.employeeId||null,r.employeeName||null,r.shiftType||null,Number(r.customers||0),Number(r.openingCash||0),Number(r.cash||0),Number(r.qris||0),Number(r.cashExpense||0),Number(r.physicalCash||0),Number(r.totalPayment||0),Number(r.expectedCash||0),Number(r.cashDifference||0),Number(r.serviceTotal||0),Number(r.productTotal||0),Number(r.totalOmzet||0),JSON.stringify(r.services||[]),JSON.stringify(r.products||[]),r.note||null,r.savedAt||null]);
+          await createShiftNotifications(client,r,u.id).catch(()=>{});
         }
         await client.query('COMMIT');
       }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
@@ -326,6 +345,7 @@ async function handler(req,res){
       if(Number(r.serviceTotal||0)<=0)return send(res,400,{ok:false,error:'Laporan shift wajib memiliki minimal 1 layanan.'});
       if(Number(r.totalPayment||0)<=0)return send(res,400,{ok:false,error:'Total pembayaran laporan shift harus lebih dari Rp0.'});if(!validShift(r))return send(res,400,{ok:false,error:'Nilai laporan shift tidak konsisten.'});if(u.role==='employee'&&String(r.employeeId)!==String(u.employee_id))return send(res,403,{ok:false,error:'Karyawan hanya boleh menyimpan shift miliknya.'});const re=await employeeFor(r.employeeId);if(!re)return send(res,400,{ok:false,error:'Karyawan tidak terdaftar.'});if(re.active===false)return send(res,400,{ok:false,error:'Karyawan sudah nonaktif.'});
       await getPool().query(`INSERT INTO wz_shift_reports(id,date,employee_id,employee_name,shift_type,customers,opening_cash,cash,qris,cash_expense,physical_cash,total_payment,expected_cash,cash_difference,service_total,product_total,total_omzet,services,products,note,saved_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19::jsonb,$20,$21) ON CONFLICT(id) DO UPDATE SET customers=EXCLUDED.customers,opening_cash=EXCLUDED.opening_cash,cash=EXCLUDED.cash,qris=EXCLUDED.qris,cash_expense=EXCLUDED.cash_expense,physical_cash=EXCLUDED.physical_cash,total_payment=EXCLUDED.total_payment,expected_cash=EXCLUDED.expected_cash,cash_difference=EXCLUDED.cash_difference,service_total=EXCLUDED.service_total,product_total=EXCLUDED.product_total,total_omzet=EXCLUDED.total_omzet,services=EXCLUDED.services,products=EXCLUDED.products,note=EXCLUDED.note,saved_at=EXCLUDED.saved_at,updated_at=NOW()`,[r.id,r.date,r.employeeId,r.employeeName||u.name,r.shiftType||null,Number(r.customers||0),Number(r.openingCash||0),Number(r.cash||0),Number(r.qris||0),Number(r.cashExpense||0),Number(r.physicalCash||0),Number(r.totalPayment||0),Number(r.expectedCash||0),Number(r.cashDifference||0),Number(r.serviceTotal||0),Number(r.productTotal||0),Number(r.totalOmzet||0),JSON.stringify(r.services||[]),JSON.stringify(r.products||[]),r.note||null,r.savedAt||new Date().toISOString()]);
+      await createShiftNotifications(getPool(),r,u.id).catch(()=>{});
       await sendShiftPushes(r,u.id).catch(()=>{});
       return send(res,200,{ok:true,id:r.id});
     }
