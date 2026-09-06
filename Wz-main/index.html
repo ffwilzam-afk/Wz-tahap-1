@@ -276,11 +276,11 @@ const defaultBranchId=db.branches[0]?.id||null;
 function load(){return structuredClone(initial)}
 function requestNotificationPermission(){
  if(!('Notification' in window)){toast('Browser tidak mendukung notifikasi perangkat.',true);return Promise.resolve('unsupported')}
- if(Notification.permission==='granted'){registerPushSubscription();toast('Notifikasi Android sudah aktif.',true);return Promise.resolve('granted')}
+ if(Notification.permission==='granted'){return registerPushSubscription().then(ok=>{toast(ok?'Notifikasi Android sudah aktif.':'Push server belum dikonfigurasi di Vercel.',true);return 'granted'})}
  if(Notification.permission==='denied'){toast('Izin notifikasi ditolak di pengaturan browser.',true);return Promise.resolve('denied')}
  return Notification.requestPermission().then(permission=>{
-  if(permission==='granted')registerPushSubscription();
-  toast(permission==='granted'?'Notifikasi Android berhasil diaktifkan.':'Izin notifikasi belum diberikan.',true);
+  if(permission==='granted')return registerPushSubscription().then(ok=>{toast(ok?'Notifikasi Android berhasil diaktifkan.':'Push server belum dikonfigurasi di Vercel.',true);return permission});
+  toast('Izin notifikasi belum diberikan.',true);
   return permission;
  }).catch(()=>{toast('Permintaan izin notifikasi tidak tersedia.',true);return 'error'});
 }
