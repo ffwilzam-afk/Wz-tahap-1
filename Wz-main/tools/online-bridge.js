@@ -18,7 +18,7 @@ async function api(path,options={}){
 window.WZOnlineEmployee={api};
 
 const NON_BUSINESS_KEYS=new Set([
-  'transactions','shiftReports','employees','__onlineStateLoaded','__onlineStateSaving',
+  'transactions','shiftReports','employees','notifications','__onlineStateLoaded','__onlineStateSaving',
   '__onlineSaveTimer','__rosterVersion','__kyongShiftImport'
 ]);
 
@@ -28,7 +28,11 @@ async function hydrateAppState(){
     const r=await api('app-state');
     const state=(r?.data&&typeof r.data==='object'&&!Array.isArray(r.data))?r.data:{};
     const hasState=Object.keys(state).length>0;
-    if(hasState)Object.assign(db,state);
+    if(hasState){
+      const serverNotifications=db.notifications;
+      Object.assign(db,state);
+      db.notifications=serverNotifications;
+    }
     appStateUpdatedAt=r.updatedAt||null;
     db.__onlineStateLoaded=true;
     return hasState;

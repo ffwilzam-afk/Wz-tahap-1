@@ -1530,7 +1530,7 @@ async function api(path,options={}){
 window.WZOnlineEmployee={api};
 
 const NON_BUSINESS_KEYS=new Set([
-  'transactions','shiftReports','employees','__onlineStateLoaded','__onlineStateSaving',
+  'transactions','shiftReports','employees','notifications','__onlineStateLoaded','__onlineStateSaving',
   '__onlineSaveTimer','__rosterVersion','__kyongShiftImport'
 ]);
 
@@ -1540,7 +1540,11 @@ async function hydrateAppState(){
     const r=await api('app-state');
     const state=(r?.data&&typeof r.data==='object'&&!Array.isArray(r.data))?r.data:{};
     const hasState=Object.keys(state).length>0;
-    if(hasState)Object.assign(db,state);
+    if(hasState){
+      const serverNotifications=db.notifications;
+      Object.assign(db,state);
+      db.notifications=serverNotifications;
+    }
     appStateUpdatedAt=r.updatedAt||null;
     db.__onlineStateLoaded=true;
     return hasState;
@@ -1835,6 +1839,23 @@ window.saveShiftReport=async function(){
   }catch(e){toast('Laporan shift gagal disimpan: '+e.message);}
   void legacySaveShiftReport;
 };
+
+async function markServerNotificationRead(id){
+  const item=(db.notifications||[]).find(x=>String(x.id)===String(id));
+  if(!item)return;
+  try{await api('notifications/read',{method:'POST',body:JSON.stringify({id})});item.read=true;render();}
+  catch(e){toast('Notifikasi belum bisa ditandai dibaca: '+e.message,true);}
+}
+async function markAllServerNotificationsRead(){
+  try{await api('notifications/read',{method:'POST',body:JSON.stringify({all:true})});(db.notifications||[]).forEach(x=>x.read=true);render();}
+  catch(e){toast('Notifikasi belum bisa ditandai dibaca: '+e.message,true);}
+}
+const legacyNotifications=window.notifications;
+window.notifications=function(){
+  const n=(db.notifications||[]).slice().reverse();
+  document.getElementById('content').innerHTML=`<div class="section-head"><div><span class="gold-label">NOTIFICATIONS</span><h1>Notifikasi</h1><p>${n.filter(x=>!x.read).length} belum dibaca.</p></div><button class="btn" onclick="markAllServerNotificationsRead()">Tandai semua dibaca</button></div><section class="card">${n.map(x=>`<div class="feature" style="padding:13px 0;border-bottom:1px solid #20242b;${x.read?'opacity:.65':''}"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div><b>${x.title}</b><div class="muted">${x.message}</div><small class="muted">${x.createdAt?new Date(x.createdAt).toLocaleString('id-ID'):(x.date||'-')}</small></div>${x.read?'':'<button class="btn small" onclick="markServerNotificationRead(\''+x.id+'\')">Tandai dibaca</button>'}</div></div>`).join('')||'<div class="empty">Belum ada notifikasi.</div>'}</section>`;
+};
+void legacyNotifications;
 
 })();
 </script>
